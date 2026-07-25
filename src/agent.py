@@ -131,7 +131,7 @@ if __name__ == "__main__":
             output = []
             for i,r in enumerate(results):
                 output.append(f"[{i+1}{r['title']}\n  链接:{r['url']}\n   摘要:{r['content']}")
-                return "\n\n".join(output)
+            return "\n\n".join(output)
         except Exception as e:
             return f"搜索失败:{e}"
 
