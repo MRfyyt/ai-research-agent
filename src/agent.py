@@ -1,9 +1,13 @@
 import os
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
 import json
 import requests
+import chromadb
 from openai import OpenAI
 from dotenv import load_dotenv
 from tavily import TavilyClient
+from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 
@@ -13,6 +17,10 @@ client = OpenAI(
 )
 
 tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+
+embed_model = SentenceTransformer("all-MiniLM-L6-V2")
+chroma_client = chromadb.PersistentClient(path="./memory_db")
+memory = chroma_client.get_or_create_collection(name="conversation_memory")
 
 class Tool:
     """一个工具 = 名字 + 描述 + 参数规则 + 实际要调用的函数"""
@@ -184,10 +192,60 @@ if __name__ == "__main__":
         func = search_web,
     )
 
+    memory_counter = 0
+    def save_to_memory(info:str)->str:
+            global memory_counter
+            try:
+                embedding = embed_model.encode(info).tolist()
+                memory.add(
+                    documents = [info],
+                    embeddings = [embedding],
+                    ids = [f"men_{memory_counter}"]
+                )
+                memory_counter +=1
+                return "已保存到长期记忆"
+            except Exception as e:
+                print(f"  [DEBUG] save_to_memory 错误: {e}")   # ← 加这行
+                return f"保存失败:{e}"
+
+    save_memory_tool = Tool(
+        name="save_to_memory",
+        description="保存重要信息到长期记忆。当用户说'记住''记下来'时调用。",
+        parameters={
+            "type": "object",
+            "properties": {"info": {"type": "string", "description": "要保存的信息"}},
+            "required": ["info"]
+        },
+        func=save_to_memory,
+    )
+    def search_memory(query:str)->str:
+        try:
+            embedding = embed_model.encode(query).tolist()
+            results = memory.query(query_embeddings = [embedding],n_results = 3)
+            docs = results["documents"][0]
+            if not docs:
+                return "未找到相关记忆"
+            return "\n".join([f"-{d}" for d in docs])
+        except Exception as e:
+            return f"搜索记忆失败:{e}"
+
+    memory_tool = Tool(
+        name = "search_memory",
+        description="搜索之前的对话记忆。如果用户提到'之前''上次'等问题，先搜索记忆。",
+        parameters={
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "搜索关键词"}},
+            "required": ["query"]
+        },
+        func=search_memory,
+    )
+
     agent = Agent(system_prompt="""你是一个AI研究助手。你可以用以下工具完成任务：
 - search_web: 搜索网页获取实时信息
 - calculate: 计算数学表达式
 - get_weather: 查询城市天气
+- save_to_memory: 保存信息到长期记忆。当用户说"记住"时必须调用！
+- search_memory: 搜索之前的对话记忆
 
 ## 工作流程
 
@@ -219,10 +277,12 @@ if __name__ == "__main__":
 - 最多搜索 3 次，之后必须给出答案
 - 用中文回答
 - 列出信息来源链接""")
-
+              
     agent.add_tool(weather_tool)
     agent.add_tool(calc_tool)
     agent.add_tool(search_tool)
+    agent.add_tool(save_memory_tool)
+    agent.add_tool(memory_tool)
 
     # 4. 测试
     print("🤖 AI Agent 助手")
