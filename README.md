@@ -26,6 +26,8 @@ LLM: 这个问题需要联网搜索
 - 🔄 **ReAct 循环** — Thought → Action → Observation，自动多步推理
 - 🎯 **多工具自动选路** — LLM 自动判断该用哪个工具、传什么参数
 - 🧠 **短期记忆** — 多轮对话保持上下文，自动清理中间过程
+- 💾 **长期记忆** — ChromaDB 持久化存储，跨对话回忆之前的查询
+- 📋 **Planning** — 任务分解：列计划 → 逐步执行 → 汇总回答
 - 📖 **来源引用** — 回答附带信息来源链接
 
 ## 🚀 快速开始
@@ -83,6 +85,8 @@ Agent 当前拥有 3 个工具：
 | `search_web` | 搜索网页，返回标题+链接+摘要 | Tavily Search API |
 | `calculate` | 计算数学表达式 | Python `eval()` |
 | `get_weather` | 查询城市实时天气 | Open-Meteo API（免费，无需注册） |
+| `save_to_memory` | 保存信息到长期记忆 | ChromaDB + sentence-transformers |
+| `search_memory` | 搜索之前的对话记忆 | ChromaDB + sentence-transformers |
 
 ### 添加新工具
 
