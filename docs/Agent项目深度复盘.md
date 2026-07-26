@@ -1,7 +1,7 @@
 # Agent 项目深度复盘
 
-> 复盘时间：2026-07-24
-> 项目：AI 研究助手 Agent
+> 复盘时间：2026-07-25（更新）
+> 项目：AI 研究助手 Agent（完整版：5 工具 + 短期记忆 + 长期记忆 + Planning）
 
 ---
 
@@ -53,63 +53,57 @@
 
 ## 二、代码中的 Bug
 
-### 🔴 严重：`search_web` return 在 for 循环里面
+### 🟢 已修复 Bug
 
-```python
-# agent.py 第 147-149 行
-for i, r in enumerate(results):
-    output.append(f"[{i+1}{r['title']}...")
-    return "\n\n".join(output)   # ← return 在循环里！
-```
+| Bug | 原因 | 修复 |
+|-----|------|------|
+| `search_web` return 在 for 里面 | 缩进错误 | `return` 移出循环 |
+| `[i+1` 缺 `]` | 格式遗漏 | 补上 `]` |
+| `msg` 被 append 两次 | 复制粘贴残留 | 删重复行 |
+| `parameters` 拼成 `paramaters` | 少一个 e | 改正拼写 |
+| `client` 变量名被 TavilyClient 覆盖 | 同名变量 | 改名 `tavily` |
+| `msg` 存为对象而非 dict | `ChatCompletionMessage` 不可下标 | 使用 `msg.model_dump()` |
+| `memory.get()` 空集合报错 | ChromaDB 空集合调用 | 改用 `memory_counter` 自增 ID |
+| `tollist()` 拼写错误 | 多一个 l | 改为 `tolist()` |
+| `memory_db/` 被提交到 Git | .gitignore 遗漏 | 添加到 .gitignore |
 
-**后果：** 只返回第 1 条搜索结果，后面的全丢了。LLM 看不到完整的搜索结果。
+### 🟡 遗留问题
 
-**修复：** `return` 的缩进应该和 `for` 对齐，而不是在 `for` 里面：
-
-```python
-for i, r in enumerate(results):
-    output.append(f"[{i+1}] {r['title']}...")
-return "\n\n".join(output)   # ← 缩进减少一级，等循环完再返回
-```
-
-### 🔴 格式错误：缺少 `]`
-
-```python
-f"[{i+1}{r['title']}..."    # ❌ [{i+1} 后面缺 ]
-f"[{i+1}] {r['title']}..."  # ✅
-```
-
-### 🟡 中等：`eval()` 的安全风险
-
-```python
-def calculate(expression: str) -> str:
-    return str(eval(expression))   # ← 用户可以执行任意 Python 代码
-```
-
-如果用户输入 `__import__('os').system('del /f *.*')`，Agent 可能会传给 calculate。虽然 Agent 一般不会这样做，但生产环境必须替换为安全的表达式解析器。
+| 问题 | 风险 | 修复方向 |
+|------|------|---------|
+| `eval()` 安全风险 | 恶意代码注入 | 替换为 `ast.literal_eval()` |
+| LLM 假装执行工具 | 说"已保存"但没调函数 | System Prompt 硬指令 |
+| 消息历史无限增长 | 长对话撑爆上下文窗口 | 截断早期消息 |
+| 无流式输出 | 等待完整回复 | 改用 `stream=True` |
 
 ---
 
 ## 三、架构评价
 
 ```
-当前架构：
+最终架构：
 
-  agent.py (单一文件，所有逻辑)
+  agent.py (~250 行)
+    ├── 外部依赖: DeepSeek(LLM) + Tavily(搜索) + Open-Meteo(天气)
+    ├── 本地依赖: ChromaDB(长期记忆) + sentence-transformers(Embedding)
     ├── Tool 类 — 工具定义
-    ├── Agent 类 — ReAct 循环
-    └── __main__ — 工具定义 + 交互循环
+    ├── Agent 类 — ReAct 循环 + 短期记忆清理
+    ├── 5 个工具: search_web, calculate, get_weather, save_to_memory, search_memory
+    └── CLI 交互循环 + Planning(System Prompt)
 ```
 
 **优点：**
 - 一个文件就能跑，部署简单
 - 自建 Agent 框架，不依赖 LangChain/CrewAI —— **面试加分项**
-- 代码量小（~170 行），容易理解
+- 5 个工具覆盖搜索、计算、天气、记忆存取
+- 短期记忆（消息清理）+ 长期记忆（ChromaDB）双记忆系统
+- Planning 能力通过 System Prompt 工程实现，不增加代码复杂度
 
 **缺点：**
 - 工具定义和交互代码混在一起，加功能时容易乱
-- `messages` 无限增长，长对话会撑爆上下文窗口
-- 没有流式输出（目前是非流式，等完整回复）
+- 消息历史无限增长（长对话会撑爆上下文窗口）
+- 没有流式输出
+- 每次启动都加载 ChromaDB + sentence-transformers，冷启动慢
 
 **和 LangChain 的对比：**
 
@@ -127,11 +121,13 @@ def calculate(expression: str) -> str:
 | 概念 | 代码位置 | 你应该能解释 |
 |------|----------|-------------|
 | **Tool Calling** | `agent.py:54-68` | "LLM 返回 JSON 说'我要调这个工具'，你的代码执行，结果回传" |
-| **ReAct 循环** | `agent.py:49-69` | "Thought → Action → Observation 循环，直到 LLM 认为可以回答" |
+| **ReAct 循环** | `agent.py:49-75` | "Thought → Action → Observation 循环，直到 LLM 认为可以回答" |
 | **Tool Schema** | `agent.py:21-31` | "用 JSON Schema 告诉 LLM：工具叫啥、干什么、参数是什么" |
-| **多工具调度** | `agent.py:52` | "LLM 看到 3 个工具描述，自己判断用哪个" |
-| **消息管理** | `agent.py:43-45,58,68` | "每轮对话追加到 messages，LLM 靠这个记住上下文" |
-| **System Prompt 工程** | `agent.py:156-164` | "好的 System Prompt 告诉 Agent 工作流程和边界，防止无限循环" |
+| **多工具调度** | `agent.py:52` | "LLM 看到 5 个工具描述，自己判断用哪个" |
+| **短期记忆** | `agent.py:63-71` | "run() 结束时清理 tool_calls 中间状态，保留干净对话历史" |
+| **长期记忆** | `save_to_memory + search_memory` | "ChromaDB 持久化，跨对话检索历史，和 Week 2 RAG 同原理" |
+| **Planning** | System Prompt | "通过 Prompt Engineering 让 LLM 先列计划再逐步执行" |
+| **System Prompt 工程** | System Prompt 全文 | "定义工具列表 + 工作流程 + 边界规则 = Agent 的行为准则" |
 
 ---
 
@@ -147,11 +143,12 @@ Week 2: RAG 知识库问答
       └── 可以接到 Week 3: Agent 搜索 → 存储 → RAG 检索
 
 Week 3: AI 研究助手 Agent
-  └── ReAct + Tool Calling: LLM 决定调哪个工具
-      └── 可以和 Week 2 合并: 搜索 → 存入知识库 → 检索问答
+  └── ReAct + Tool Calling + 短期记忆 + 长期记忆 + Planning
+      ├── 长期记忆直接复用了 Week 2 的 ChromaDB + sentence-transformers
+      └── 和 Week 2 串联: Agent 搜索 → 存知识库 → RAG 查询
 ```
 
-**三个项目串起来就是一个完整的 AI 产品原型。**
+**三个项目形成了完整技术栈：基础调用 → 检索增强 → 自主决策。**
 
 ---
 
@@ -165,6 +162,8 @@ Week 3: AI 研究助手 Agent
 | **Agent 无限循环怎么办？** | 设置 `max_steps` 上限 + System Prompt 约束"搜几次必须回答"。 |
 | **LLM 调了错误的工具怎么办？** | try/except 兜底，把错误信息作为 tool result 返回，LLM 看到错误会调整。 |
 | **消息历史太长怎么办？** | 截断早期消息，或只保留 System Prompt + 最近 N 轮对话。 |
+| **短期记忆和长期记忆的区别？** | 短期记忆 = 消息列表，跨轮不丢上下文。长期记忆 = ChromaDB，跨对话持久化。 |
+| **Planning 是怎么实现的？** | 不需要额外代码，通过 System Prompt 让 LLM 自己列计划再执行。 |
 
 ---
 
