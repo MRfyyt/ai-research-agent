@@ -22,9 +22,10 @@ LLM: 这个问题需要联网搜索
 
 - 🔍 **网页搜索** — 通过 Tavily API 实时搜索互联网
 - 🧮 **数学计算** — 支持复杂表达式求值
-- 🌤️ **天气查询** — 支持国内主要城市（演示用）
+- 🌤️ **真实天气** — 通过 Open-Meteo API 查询实时天气（免费、无需注册）
 - 🔄 **ReAct 循环** — Thought → Action → Observation，自动多步推理
 - 🎯 **多工具自动选路** — LLM 自动判断该用哪个工具、传什么参数
+- 🧠 **短期记忆** — 多轮对话保持上下文，自动清理中间过程
 - 📖 **来源引用** — 回答附带信息来源链接
 
 ## 🚀 快速开始
@@ -81,7 +82,7 @@ Agent 当前拥有 3 个工具：
 |------|------|------|
 | `search_web` | 搜索网页，返回标题+链接+摘要 | Tavily Search API |
 | `calculate` | 计算数学表达式 | Python `eval()` |
-| `get_weather` | 查询城市天气（演示） | 本地字典 |
+| `get_weather` | 查询城市实时天气 | Open-Meteo API（免费，无需注册） |
 
 ### 添加新工具
 
@@ -108,6 +109,9 @@ agent.add_tool(stock_tool)
 AI Agent/
 ├── .env                      # API Key 配置（不提交）
 ├── requirements.txt          # Python 依赖
+├── docs/                     # 复盘 + 思路文档
+│   ├── Agent项目深度复盘.md
+│   └── Agent项目整体思路回顾.md
 └── src/
     ├── 01_agent_concepts_demo.py  # Agent 核心概念教学脚本
     └── agent.py                   # Agent 完整实现
@@ -118,6 +122,7 @@ AI Agent/
 - `Agent` 类 — ReAct 循环引擎
   - `add_tool()` — 注册工具
   - `run()` — 执行 ReAct 循环（Thought → Action → Observation）
+  - 短期记忆管理 — 自动清理 tool_calls 中间状态
 
 ## 🧩 Agent 工作流程
 

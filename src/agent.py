@@ -1,5 +1,6 @@
 import os
 import json
+import requests
 from openai import OpenAI
 from dotenv import load_dotenv
 from tavily import TavilyClient
@@ -56,10 +57,22 @@ class Agent:
             )
 
             msg = response.choices[0].message
-            self.messages.append(msg)
+            self.messages.append(msg.model_dump())
 
             if not msg.tool_calls:
-                return msg.content or ""
+                # 清理历史：只保留 system + user + 最终 assistant 回复
+                answer = msg.content or""
+                clean = []
+                for m in self.messages:
+                    if m["role"] == "system":
+                        clean.append(m)
+                    elif m["role"] == "user":
+                        clean.append(m)
+                    elif m["role"] == "assistant" and not m.get("tool_calls"):
+                        clean.append(m)
+                clean.append({"role":"assistant","content":answer})
+                self.messages = clean
+                return answer
 
             for tc in msg.tool_calls:
                 name = tc.function.name
@@ -82,12 +95,34 @@ class Agent:
 
 if __name__ == "__main__":
     def get_weather(city: str) -> str:
-        weather_data = {
-            "北京": "22°C,晴",
-            "上海": "25°C,多云",
-            "深圳": "28°C,阵雨",
+        cities = {
+            "北京": (39.9, 116.4),
+            "上海": (31.2, 121.5),
+            "深圳": (22.5, 114.1),
+            "广州": (23.1, 113.3),
+            "杭州": (30.3, 120.2),
+            "成都": (30.6, 104.1),
+            "武汉": (30.6, 114.3),
+            "南京": (32.1, 118.8),
         }
-        return weather_data.get(city, f"未找到{city}的天气数据")
+        coords = cities.get(city)
+        if not coords:
+             return f"暂不支持查询{city}的天气（可用城市：{', '.join(cities.keys())})"
+        lat,lon = coords
+        try:
+          url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code&timezone=Asia/Shanghai"
+          resp = requests.get(url, timeout=5).json()
+          temp = resp["current"]["temperature_2m"]  
+          code = resp["current"]["weather_code"]
+          weather_map = {
+            0: "晴", 1: "少云", 2: "多云", 3: "阴",
+            45: "雾", 51: "小雨", 61: "中雨", 80: "阵雨"
+          }
+          weather = weather_map.get(code, f"code={code}")
+          return f"{city}当前{weather}，气温{temp}°C"
+
+        except Exception as e:
+            return f"查询天气失败: {e}"
 
     weather_tool = Tool(
         name="get_weather",
