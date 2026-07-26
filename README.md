@@ -1,6 +1,6 @@
 # 🤖 AI 研究助手 Agent
 
-基于 **DeepSeek + ReAct 循环 + Tavily 搜索** 的 AI Agent。给定一个话题，自动搜索网页、分析结果、生成带来源引用的研究报告。
+基于 **DeepSeek + ReAct 循环 + Tavily 搜索** 的 AI Agent。具备 5 个工具、双记忆系统（短期+长期）、Planning 任务分解能力。自动搜索网页、调用 API、记忆对话、生成带来源引用的研究报告。
 
 ## 🧠 什么是 Agent？
 
@@ -78,7 +78,7 @@ python src/agent.py
 
 ## 🔧 工具系统
 
-Agent 当前拥有 3 个工具：
+Agent 当前拥有 5 个工具：
 
 | 工具 | 功能 | 实现 |
 |------|------|------|
@@ -165,14 +165,16 @@ AI Agent/
 | LLM | DeepSeek API (deepseek-v4-pro) |
 | Agent 框架 | 自建（ReAct 循环，不依赖 LangChain） |
 | 网页搜索 | Tavily Search API |
-| 工具定义 | JSON Schema |
+| 天气查询 | Open-Meteo API（免费，无需注册） |
+| 长期记忆 | ChromaDB + sentence-transformers |
+| Embedding | all-MiniLM-L6-v2（本地运行） |
 
 ## 📚 三个项目的关系
 
 ```
-Week 1: CLI AI 助手          → DeepSeek API 基础调用
-Week 2: RAG 知识库问答       → Embedding + 向量数据库
-Week 3: AI 研究助手 Agent    → Tool Calling + ReAct 循环
+Week 1: CLI AI 助手          → DeepSeek API 基础调用 + 流式输出
+Week 2: RAG 知识库问答       → Embedding + ChromaDB 向量检索
+Week 3: AI 研究助手 Agent    → ReAct + Tool Calling + 双记忆 + Planning
 
-串联: Agent 搜索 → 存知识库 → RAG 查询 → 回答
+Week 2 的 ChromaDB + sentence-transformers 被 Week 3 复用为长期记忆系统
 ```
