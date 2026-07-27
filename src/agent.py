@@ -1,3 +1,15 @@
+# ============================================================
+# agent.py — AI Agent 完整实现
+# ============================================================
+# 职责: 自建 ReAct Agent 框架——LLM 决策调哪个工具 → 代码执行 → 结果回传 → 循环。
+# 依赖: DeepSeek(LLM) + Tavily(搜索) + Open-Meteo(天气) + ChromaDB(长期记忆)
+# 工程技能: Function Calling、ReAct 循环、多工具调度、短期记忆清理、长期记忆
+#
+# Agent 工作流:
+#   用户提问 → LLM 分析 → 决定调哪个工具 → 代码执行 → 结果喂回 LLM → 循环 → 回答
+#   核心: LLM 不执行函数，它只是"说"要调哪个。真正执行的是你的代码。
+# ============================================================
+
 import os
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
@@ -11,6 +23,11 @@ from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 
+# ============================================================
+# 两个 API 客户端: 一个管"大脑"，一个管"手"
+# ============================================================
+# client: DeepSeek LLM → 推理决策 +
+# 工具调用 tavily: Tavily Search API → 真正搜网页
 client = OpenAI(
     api_key = os.getenv("DEEPSEEK_API_KEY"),
     base_url = os.getenv("DEEPSEEK_BASE_URL","https://api.deepseek.com"),
@@ -18,20 +35,31 @@ client = OpenAI(
 
 tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 
+# ============================================================
+# 长期记忆: 复用 Week 2 的 ChromaDB + sentence-transformers
+# ============================================================
 embed_model = SentenceTransformer("all-MiniLM-L6-V2")
 chroma_client = chromadb.PersistentClient(path="./memory_db")
 memory = chroma_client.get_or_create_collection(name="conversation_memory")
 
+# ============================================================
+# Tool 类: 把任意 Python 函数包装成 LLM 可调用的工具
+# ============================================================
 class Tool:
-    """一个工具 = 名字 + 描述 + 参数规则 + 实际要调用的函数"""
+    """一个工具 = 名字 + 描述 + 参数规则 + 实际要调用的函数。
+    LLM 通过名字和描述决定"该不该调这个工具"，
+    通过 parameters（JSON Schema 格式）知道"要传什么参数"，
+    你的代码通过 func 真正执行。"""
+
     def __init__(self,name :str ,description : str,parameters :dict,func):
-        self.name = name
-        self.description = description
-        self.parameters = parameters
-        self.func = func
+        self.name = name                # 工具名，如 "search_web"
+        self.description = description  # 告诉 LLM 这个工具干什么
+        self.parameters = parameters    # JSON Schema 格式的参数定义
+        self.func = func                # 实际执行的 Python 函数
 
     def to_openai_schema(self)->dict:
-        """转成OpenAI/DeepSeek要求的JSON Schema格式"""
+        """转成 OpenAI/DeepSeek API 要求的 tools 参数格式。
+        type: "function" + function: {name, description, parameters}"""
         return {
             "type":"function",
             "function":{
@@ -41,34 +69,54 @@ class Tool:
             }
         }
 
+# ============================================================
+# Agent 类: ReAct 循环引擎
+# ============================================================
 class Agent:
+    """自建 Agent——不依赖 LangChain/CrewAI。
+    核心是一个 for 循环（ReAct 模式）:
+      Thought（LLM 思考）→ Action（执行工具）→ Observation（看结果）→ 循环"""
+
     def __init__(self,system_prompt):
-        self.system_prompt = system_prompt
-        self.tools = {}
-        self.messages = []
+        self.system_prompt = system_prompt  # Agent 人设 + 工作规则
+        self.tools = {}                     # 工具名 → Tool 对象
+        self.messages = []                  # 对话历史
 
     def add_tool(self,tool:Tool):
-        self.tools[tool.name] = tool  
+        """注册一个工具到 Agent。注册后 LLM 在 run() 中可以看到并调用它。"""
+        self.tools[tool.name] = tool
 
     def run(self,user_input : str,max_steps : int = 5)->str:
+        """ReAct 循环入口。max_steps 防止无限循环。
+        返回 LLM 的最终回答（自然语言文本）。"""
+
+        # ---- 首次调用时加入 System Prompt ----
         if self.system_prompt and not self.messages:
             self.messages.append({"role": "system", "content": self.system_prompt})
-        
+
         self.messages.append({"role": "user", "content": user_input})
 
+        # ============================================================
+        # ReAct 循环: 最多 max_steps 轮
+        # ============================================================
         for step in range(max_steps):
+            # ---- Step 1: 调 LLM，告诉它有哪些工具可用 ----
             response = client.chat.completions.create(
                 model = os.getenv("DEEPSEEK_MODEL","deepseek-v4-pro"),
                 messages = self.messages,
-                tools = [t.to_openai_schema() for t in self.tools.values()],
+                tools = [t.to_openai_schema() for t in self.tools.values()],  # 所有工具描述
                 temperature = 0.3
             )
 
             msg = response.choices[0].message
+            # model_dump(): ChatCompletionMessage 对象 → dict，否则不能下标访问
             self.messages.append(msg.model_dump())
 
+            # ---- Step 2: LLM 没说要调工具 → 这就是最终回答 ----
             if not msg.tool_calls:
-                # 清理历史：只保留 system + user + 最终 assistant 回复
+                # ---- 短期记忆清理: 只保留干净的对话历史 ----
+                # 删掉 tool_calls 和 tool 结果等中间状态，
+                # 只留 System Prompt + 用户消息 + 不含 tool_calls 的助手消息
                 answer = msg.content or""
                 clean = []
                 for m in self.messages:
@@ -82,26 +130,39 @@ class Agent:
                 self.messages = clean
                 return answer
 
+            # ---- Step 3: LLM 决定调工具 → 真正执行 ----
             for tc in msg.tool_calls:
-                name = tc.function.name
-                args = json.loads(tc.function.arguments)
-                tool = self.tools.get(name)
+                name = tc.function.name          # 工具名，如 "search_web"
+                args = json.loads(tc.function.arguments)  # 参数 JSON → dict
+                tool = self.tools.get(name)      # 找到对应的 Tool 对象
+
+                # 防御性处理: 工具不存在 or 执行出错
                 if not tool:
                     result = f"工具 '{name}' 不存在"
                 else:
                     try:
-                        result = tool.func(**args)
+                        result = tool.func(**args)   # ← 真正执行函数！
                     except Exception as e:
                         result = f"工具执行失败: {e}"
+
+                # 执行结果作为 Tool 消息喂回 LLM
                 self.messages.append({
                     "role":"tool",
                     "tool_call_id":tc.id,
                     "content":str(result),
                 })
 
+        # 达到最大步数仍无最终回答 → 兜底返回
         return "已达到最大步数，但仍未得到答案"
 
+# ============================================================
+# 工具定义 + CLI 交互（__main__ 块）
+# ============================================================
 if __name__ == "__main__":
+
+    # ============================================================
+    # 工具 1: get_weather — 真实天气 API（Open-Meteo，免费无需注册）
+    # ============================================================
     def get_weather(city: str) -> str:
         cities = {
             "北京": (39.9, 116.4),
@@ -120,7 +181,7 @@ if __name__ == "__main__":
         try:
           url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code&timezone=Asia/Shanghai"
           resp = requests.get(url, timeout=5).json()
-          temp = resp["current"]["temperature_2m"]  
+          temp = resp["current"]["temperature_2m"]
           code = resp["current"]["weather_code"]
           weather_map = {
             0: "晴", 1: "少云", 2: "多云", 3: "阴",
@@ -145,13 +206,16 @@ if __name__ == "__main__":
         func=get_weather,
     )
 
+    # ============================================================
+    # 工具 2: calculate — 数学计算
+    # ============================================================
     def calculate(expression: str) -> str:
             """安全计算数学表达式"""
             try:
                 return str(eval(expression))
             except Exception as e:
                 return f"计算错误: {e}"
-    
+
     calc_tool = Tool(
             name="calculate",
             description="计算数学表达式，如 '123 * 456' 或 'sqrt(144)'",
@@ -165,6 +229,9 @@ if __name__ == "__main__":
             func=calculate,
         )
 
+    # ============================================================
+    # 工具 3: search_web — Tavily 搜索 API
+    # ============================================================
     def search_web(query:str,max_results = 3)->str:
         try:
             response = tavily.search(query, max_results=max_results)
@@ -192,10 +259,14 @@ if __name__ == "__main__":
         func = search_web,
     )
 
+    # ============================================================
+    # 工具 4: save_to_memory — 长期记忆存储（复用 Week 2 ChromaDB）
+    # ============================================================
     memory_counter = 0
     def save_to_memory(info:str)->str:
             global memory_counter
             try:
+                # 文本 → 向量 → 存入 ChromaDB（和 Week 2 add_documents 完全一样）
                 embedding = embed_model.encode(info).tolist()
                 memory.add(
                     documents = [info],
@@ -218,6 +289,10 @@ if __name__ == "__main__":
         },
         func=save_to_memory,
     )
+
+    # ============================================================
+    # 工具 5: search_memory — 长期记忆搜索
+    # ============================================================
     def search_memory(query:str)->str:
         try:
             embedding = embed_model.encode(query).tolist()
@@ -240,6 +315,10 @@ if __name__ == "__main__":
         func=search_memory,
     )
 
+    # ============================================================
+    # Agent 初始化: System Prompt = Agent 的行为准则
+    # ============================================================
+    # Planning 通过 Prompt 工程实现——让 LLM 先列计划再逐步执行
     agent = Agent(system_prompt="""你是一个AI研究助手。你可以用以下工具完成任务：
 - search_web: 搜索网页获取实时信息
 - calculate: 计算数学表达式
@@ -277,14 +356,17 @@ if __name__ == "__main__":
 - 最多搜索 3 次，之后必须给出答案
 - 用中文回答
 - 列出信息来源链接""")
-              
+
+    # ---- 注册全部 5 个工具 ----
     agent.add_tool(weather_tool)
     agent.add_tool(calc_tool)
     agent.add_tool(search_tool)
     agent.add_tool(save_memory_tool)
     agent.add_tool(memory_tool)
 
-    # 4. 测试
+    # ============================================================
+    # CLI 交互循环: 和 Week 1 的 main.py 一样的模式
+    # ============================================================
     print("🤖 AI Agent 助手")
     print("输入 /quit 退出\n")
 
